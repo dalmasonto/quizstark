@@ -77,6 +77,11 @@ struct Participant {
     total_submissions: u256,
 }
 
+#[starknet::interface]
+pub trait TBA<TContractState> {
+    fn create_account(ref self: TContractState, implementation_hash: ContractAddress, token_contract: ContractAddress,token_id: u256, salt: felt252);
+}
+
 // #[derive(Default, serde::Serde)]
 #[starknet::interface]
 pub trait IQuiz<TContractState> {
@@ -106,6 +111,8 @@ pub trait IQuiz<TContractState> {
     fn submit_question(
         ref self: TContractState, quiz_id: QuizID, question_id: QuestionID, optionID: u8
     );
+
+    fn mint_submission_nft(ref self: TContractState, submission_id: SubmissionID);
 
     fn get_participant_submissions(
         self: @TContractState, participantAddress: ContractAddress
@@ -142,10 +149,37 @@ mod QuizContract {
     use core::{zeroable, zeroable::{NonZero}};
 
     use quiz_contract::upgrade::IUpgradeableContract;
-    use starknet::{SyscallResultTrait, ClassHash};
+    use starknet::{SyscallResultTrait, ClassHash, get_contract_address, contract_address_const};
+
+    use openzeppelin::introspection::src5::SRC5Component;
+    use openzeppelin::token::erc721::{ERC721Component, ERC721HooksEmptyImpl};
+    use super::TBADispatcher;
+    use super::TBADispatcherTrait;
+
+    component!(path: ERC721Component, storage: erc721, event: ERC721Event);
+    component!(path: SRC5Component, storage: src5, event: SRC5Event);
+
+    // ERC721 Mixin
+    #[abi(embed_v0)]
+    impl ERC721MixinImpl = ERC721Component::ERC721MixinImpl<ContractState>;
+    impl ERC721InternalImpl = ERC721Component::InternalImpl<ContractState>;
+
+    #[event]
+    #[derive(Drop, starknet::Event)]
+    enum Event {
+        #[flat]
+        ERC721Event: ERC721Component::Event,
+        #[flat]
+        SRC5Event: SRC5Component::Event
+    }
 
     #[storage]
     struct Storage {
+        token_id_count: u256,
+        #[substorage(v0)]
+        erc721: ERC721Component::Storage,
+        #[substorage(v0)]
+        src5: SRC5Component::Storage,
         quizzes: LegacyMap<QuizID, Quiz>,
         quizzes_count: u256,
         questions: LegacyMap<(QuizID, QuestionID), Question>,
@@ -167,6 +201,23 @@ mod QuizContract {
             if participant.id.is_zero() {
                 let newParticipant = Participant { id: participantAddress, total_submissions: 0 };
                 self.participants.write(participantAddress, newParticipant);
+                let implementation_hash = contract_address_const::<0x45d67b8590561c9b54e14dd309c9f38c4e2c554dd59414021f9d079811621bd>();
+                let tba_contract_address = contract_address_const::<
+                0x04101d3fa033024654083dd982273a300cb019b8cb96dd829267a4daf59f7b7e
+            >();
+
+                let name = "Stark Word";
+                let symbol = "STW";
+                let base_uri = "https://api.example.com/v1/";
+                let token_id = self.token_id_count.read() + 1;
+
+                // implementation hash 0x45d67b8590561c9b54e14dd309c9f38c4e2c554dd59414021f9d079811621bd
+
+                self.erc721.initializer(name, symbol, base_uri);
+                self.erc721.mint(participantAddress, token_id);
+                self.token_id_count.write(token_id);
+                // let TBAContract = TBADispatcher {contract_address: tba_contract_address};
+                // TBAContract.create_account(implementation_hash, get_contract_address(), token_id, 0);
             }
         }
         fn get_participant(
@@ -194,6 +245,8 @@ mod QuizContract {
         fn get_quiz(self: @ContractState, quiz_id: QuizID) -> Quiz {
             self.quizzes.read(quiz_id)
         }
+
+
 
         fn create_question(
             ref self: ContractState, quiz_id: QuizID, text: felt252, correct_option: u8
@@ -334,6 +387,7 @@ mod QuizContract {
                                 (participant, participant_account.total_submissions),
                                 newSubmissionID
                             );
+
                         self.participants.write(participant, participant_account);
                     }
                 } else {
@@ -373,6 +427,20 @@ mod QuizContract {
                 self.quizzes.write(quiz_id, quiz);
             }
         }
+
+    fn mint_submission_nft(ref self: ContractState, submission_id: SubmissionID){
+        let participantAddress = get_caller_address();
+        let submission = self.submissions.read(submission_id);
+        let name = "STW Quiz";
+        let symbol = format!("STW #{}", submission.quiz_id);
+
+        let base_uri = "https://api.example.com/v1/";
+        let token_id = submission_id + submission.quiz_id;
+
+        self.erc721.initializer(name, symbol, base_uri);
+        self.erc721.mint(participantAddress, token_id);
+    }
+
 
 
         fn get_participant_submissions(
